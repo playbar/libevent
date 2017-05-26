@@ -274,7 +274,7 @@
 /* #undef EVENT__HAVE_WORKING_KQUEUE */
 
 /* Numeric representation of the version */
-#define EVENT__NUMERIC_VERSION 0x02010500
+#define EVENT__NUMERIC_VERSION 0x02020001
 
 /* Name of package */
 #define EVENT__PACKAGE "libevent"
@@ -331,13 +331,10 @@
 #define EVENT__TIME_WITH_SYS_TIME 1
 
 /* Version number of package */
-#define EVENT__VERSION "2.1.5-beta"
+#define EVENT__VERSION "2.2.0-alpha-dev"
 
 /* Define to appropriate substitue if compiler doesnt have __func__ */
 #define EVENT____func__ __FUNCTION__
-
-/* Define to empty if `const' does not conform to ANSI C. */
-/* #undef EVENT__const */
 
 /* Define to `__inline__' or `__inline' if that's what the C compiler
    calls it, or to nothing if 'inline' is not supported under any name.  */

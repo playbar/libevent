@@ -976,7 +976,6 @@ name_parse(u8 *packet, int length, int *idx, char *name_out, int name_out_len) {
 
 	for (;;) {
 		u8 label_len;
-		if (j >= length) return -1;
 		GET8(label_len);
 		if (!label_len) break;
 		if (label_len & 0xc0) {
@@ -997,6 +996,7 @@ name_parse(u8 *packet, int length, int *idx, char *name_out, int name_out_len) {
 			*cp++ = '.';
 		}
 		if (cp + label_len >= end) return -1;
+		if (j + label_len > length) return -1;
 		memcpy(cp, packet + j, label_len);
 		cp += label_len;
 		j += label_len;
@@ -2265,10 +2265,11 @@ evdns_request_transmit(struct request *req) {
 		nameserver_write_waiting(req->ns, 1);
 		return 1;
 	case 2:
-		/* failed to transmit the request entirely. */
+		/* failed to transmit the request entirely. we can fallthrough since
+		 * we'll set a timeout, which will time out, and make us retransmit the
+		 * request anyway. */
 		retcode = 1;
-		/* fall through: we'll set a timeout, which will time out,
-		 * and make us retransmit the request anyway. */
+		EVUTIL_FALLTHROUGH;
 	default:
 		/* all ok */
 		log(EVDNS_LOG_DEBUG,
@@ -3175,8 +3176,11 @@ search_set_from_hostname(struct evdns_base *base) {
 static char *
 search_make_new(const struct search_state *const state, int n, const char *const base_name) {
 	const size_t base_len = strlen(base_name);
-	const char need_to_append_dot = base_name[base_len - 1] == '.' ? 0 : 1;
+	char need_to_append_dot;
 	struct search_domain *dom;
+
+	if (!base_len) return NULL;
+	need_to_append_dot = base_name[base_len - 1] == '.' ? 0 : 1;
 
 	for (dom = state->head; dom; dom = dom->next) {
 		if (!n--) {
@@ -3908,6 +3912,7 @@ evdns_base_new(struct event_base *event_base, int flags)
 	 * functionality.  We can't just call evdns_getaddrinfo directly or
 	 * else libevent-core will depend on libevent-extras. */
 	evutil_set_evdns_getaddrinfo_fn_(evdns_getaddrinfo);
+	evutil_set_evdns_getaddrinfo_cancel_fn_(evdns_getaddrinfo_cancel);
 
 	base = mm_malloc(sizeof(struct evdns_base));
 	if (base == NULL)
@@ -4008,7 +4013,7 @@ static void
 evdns_nameserver_free(struct nameserver *server)
 {
 	if (server->socket >= 0)
-	evutil_closesocket(server->socket);
+		evutil_closesocket(server->socket);
 	(void) event_del(&server->event);
 	event_debug_unassign(&server->event);
 	if (server->state == 0)
@@ -4048,6 +4053,8 @@ evdns_base_free_and_unlock(struct evdns_base *base, int fail_requests)
 
 	for (server = base->server_head; server; server = server_next) {
 		server_next = server->next;
+		/** already done something before */
+		server->probe_request = NULL;
 		evdns_nameserver_free(server);
 		if (server_next == base->server_head)
 			break;

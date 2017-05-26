@@ -119,6 +119,7 @@ err_openssl(const char *func)
 	exit(1);
 }
 
+#ifndef _WIN32
 /* See http://archives.seul.org/libevent/users/Jan-2013/msg00039.html */
 static int cert_verify_callback(X509_STORE_CTX *x509_ctx, void *arg)
 {
@@ -181,6 +182,7 @@ static int cert_verify_callback(X509_STORE_CTX *x509_ctx, void *arg)
 		return 0;
 	}
 }
+#endif
 
 int
 main(int argc, char **argv)
@@ -189,7 +191,7 @@ main(int argc, char **argv)
 
 	struct evhttp_uri *http_uri = NULL;
 	const char *url = NULL, *data_file = NULL;
-	const char *crt = "/etc/ssl/certs/ca-certificates.crt";
+	const char *crt = NULL;
 	const char *scheme, *host, *path, *query;
 	char uri[256];
 	int port;
@@ -310,11 +312,13 @@ main(int argc, char **argv)
 	}
 	uri[sizeof(uri) - 1] = '\0';
 
+#if (OPENSSL_VERSION_NUMBER < 0x10100000L) || defined(LIBRESSL_VERSION_NUMBER)
 	// Initialize OpenSSL
 	SSL_library_init();
 	ERR_load_crypto_strings();
 	SSL_load_error_strings();
 	OpenSSL_add_all_algorithms();
+#endif
 
 	/* This isn't strictly necessary... OpenSSL performs RAND_poll
 	 * automatically on first use of random number generator. */
@@ -334,11 +338,19 @@ main(int argc, char **argv)
 #ifndef _WIN32
 	/* TODO: Add certificate loading on Windows as well */
 
-	/* Attempt to use the system's trusted root certificates.
-	 * (This path is only valid for Debian-based systems.) */
-	if (1 != SSL_CTX_load_verify_locations(ssl_ctx, crt, NULL)) {
-		err_openssl("SSL_CTX_load_verify_locations");
-		goto error;
+	if (crt == NULL) {
+		X509_STORE *store;
+		/* Attempt to use the system's trusted root certificates. */
+		store = SSL_CTX_get_cert_store(ssl_ctx);
+		if (X509_STORE_set_default_paths(store) != 1) {
+			err_openssl("X509_STORE_set_default_paths");
+			goto error;
+		}
+	} else {
+		if (SSL_CTX_load_verify_locations(ssl_ctx, crt, NULL) != 1) {
+			err_openssl("SSL_CTX_load_verify_locations");
+			goto error;
+		}
 	}
 	/* Ask OpenSSL to verify the server certificate.  Note that this
 	 * does NOT include verifying that the hostname is correct.
@@ -364,7 +376,9 @@ main(int argc, char **argv)
 	 * "wrapping" OpenSSL's routine, not replacing it. */
 	SSL_CTX_set_cert_verify_callback(ssl_ctx, cert_verify_callback,
 					  (void *) host);
-#endif // not _WIN32
+#else // _WIN32
+	(void)crt;
+#endif // _WIN32
 
 	// Create event base
 	base = event_base_new();
@@ -474,17 +488,20 @@ cleanup:
 		SSL_CTX_free(ssl_ctx);
 	if (type == HTTP && ssl)
 		SSL_free(ssl);
+#if (OPENSSL_VERSION_NUMBER < 0x10100000L) || defined(LIBRESSL_VERSION_NUMBER)
 	EVP_cleanup();
 	ERR_free_strings();
 
-#ifdef EVENT__HAVE_ERR_REMOVE_THREAD_STATE
-	ERR_remove_thread_state(NULL);
-#else
+#if OPENSSL_VERSION_NUMBER < 0x10000000L
 	ERR_remove_state(0);
+#else
+	ERR_remove_thread_state(NULL);
 #endif
+
 	CRYPTO_cleanup_all_ex_data();
 
 	sk_SSL_COMP_free(SSL_COMP_get_compression_methods());
+#endif /* (OPENSSL_VERSION_NUMBER < 0x10100000L) || defined(LIBRESSL_VERSION_NUMBER) */
 
 #ifdef _WIN32
 	WSACleanup();

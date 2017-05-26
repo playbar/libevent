@@ -123,6 +123,7 @@ static const struct eventop *eventops[] = {
 };
 
 /* Global state; deprecated */
+EVENT2_EXPORT_SYMBOL
 struct event_base *event_global_current_base_ = NULL;
 #define current_base event_global_current_base_
 
@@ -2779,21 +2780,7 @@ event_del_nolock_(struct event *ev, int blocking)
 		}
 	}
 
-	/* If the main thread is currently executing this event's callback,
-	 * and we are not the main thread, then we want to wait until the
-	 * callback is done before we start removing the event.  That way,
-	 * when this function returns, it will be safe to free the
-	 * user-supplied argument. */
 	base = ev->ev_base;
-#ifndef EVENT__DISABLE_THREAD_SUPPORT
-	if (blocking != EVENT_DEL_NOBLOCK &&
-	    base->current_event == event_to_event_callback(ev) &&
-	    !EVBASE_IN_THREAD(base) &&
-	    (blocking == EVENT_DEL_BLOCK || !(ev->ev_events & EV_FINALIZE))) {
-		++base->current_event_waiters;
-		EVTHREAD_COND_WAIT(base->current_event_cond, base->th_base_lock);
-	}
-#endif
 
 	EVUTIL_ASSERT(!(ev->ev_flags & ~EVLIST_ALL));
 
@@ -2839,6 +2826,21 @@ event_del_nolock_(struct event *ev, int blocking)
 		evthread_notify_base(base);
 
 	event_debug_note_del_(ev);
+
+	/* If the main thread is currently executing this event's callback,
+	 * and we are not the main thread, then we want to wait until the
+	 * callback is done before returning. That way, when this function
+	 * returns, it will be safe to free the user-supplied argument.
+	 */
+#ifndef EVENT__DISABLE_THREAD_SUPPORT
+	if (blocking != EVENT_DEL_NOBLOCK &&
+	    base->current_event == event_to_event_callback(ev) &&
+	    !EVBASE_IN_THREAD(base) &&
+	    (blocking == EVENT_DEL_BLOCK || !(ev->ev_events & EV_FINALIZE))) {
+		++base->current_event_waiters;
+		EVTHREAD_COND_WAIT(base->current_event_cond, base->th_base_lock);
+	}
+#endif
 
 	return (res);
 }
@@ -2960,6 +2962,7 @@ event_callback_activate_nolock_(struct event_base *base,
 	switch (evcb->evcb_flags & (EVLIST_ACTIVE|EVLIST_ACTIVE_LATER)) {
 	default:
 		EVUTIL_ASSERT(0);
+		EVUTIL_FALLTHROUGH;
 	case EVLIST_ACTIVE_LATER:
 		event_queue_remove_active_later(base, evcb);
 		r = 0;
@@ -3148,10 +3151,6 @@ timeout_process(struct event_base *base)
 	}
 }
 
-#if (EVLIST_INTERNAL >> 4) != 1
-#error "Mismatch for value of EVLIST_INTERNAL"
-#endif
-
 #ifndef MAX
 #define MAX(a,b) (((a)>(b))?(a):(b))
 #endif
@@ -3159,13 +3158,13 @@ timeout_process(struct event_base *base)
 #define MAX_EVENT_COUNT(var, v) var = MAX(var, v)
 
 /* These are a fancy way to spell
-     if (flags & EVLIST_INTERNAL)
+     if (~flags & EVLIST_INTERNAL)
          base->event_count--/++;
 */
 #define DECR_EVENT_COUNT(base,flags) \
-	((base)->event_count -= (~((flags) >> 4) & 1))
+	((base)->event_count -= !((flags) & EVLIST_INTERNAL))
 #define INCR_EVENT_COUNT(base,flags) do {					\
-	((base)->event_count += (~((flags) >> 4) & 1));				\
+	((base)->event_count += !((flags) & EVLIST_INTERNAL));			\
 	MAX_EVENT_COUNT((base)->event_count_max, (base)->event_count);		\
 } while (0)
 

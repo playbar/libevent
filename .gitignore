@@ -41,15 +41,21 @@ Makefile.in
 TAGS
 tags
 
+# cscope stuff
+cscope*
+
 # Stuff made by our makefiles
-libevent.pc
-libevent_pthreads.pc
-libevent_openssl.pc
+*.pc
 *.log
 *.trs
 
 ## The initial / makes these files only get ignored in particular directories.
 /autom4te.cache
+
+# configure in progress
+/.cyg*
+/confdefs.*
+/conftest.*
 
 # Libtool adds these, at least sometimes
 /m4/libtool.m4
@@ -127,9 +133,17 @@ libevent_openssl.pc
 /lib/
 /tmp/
 /verify_tests.sh
+/verify_tests.bat
 /event.dir
 /event_core.dir
 /event_extra.dir
 *.vcxproj
 *.sln
 *.filters
+
+# make dist
+/COPYING
+/INSTALL
+/*.tar.gz
+
+/.vagrant

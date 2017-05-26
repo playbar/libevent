@@ -34,6 +34,8 @@
 #include <windows.h>
 #endif
 
+#include "util-internal.h"
+
 #ifndef _WIN32
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -54,23 +56,47 @@
 #include <openssl/bio.h>
 #include <openssl/err.h>
 #include <openssl/pem.h>
+#include "openssl-compat.h"
 
 #include <string.h>
+#ifdef _WIN32
+#include <io.h>
+#define read _read
+#define write _write
+#else
 #include <unistd.h>
+#endif
 
-/* A short pre-generated key, to save the cost of doing an RSA key generation
- * step during the unit tests.  It's only 512 bits long, and it is published
- * in this file, so you would have to be very foolish to consider using it in
- * your own code. */
+/* A pre-generated key, to save the cost of doing an RSA key generation step
+ * during the unit tests. It is published in this file, so you would have to
+ * be very foolish to consider using it in your own code. */
 static const char KEY[] =
     "-----BEGIN RSA PRIVATE KEY-----\n"
-    "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\n"
+    "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\n"
     "-----END RSA PRIVATE KEY-----\n";
 
 EVP_PKEY *
@@ -160,6 +186,7 @@ get_ssl_ctx(void)
 void
 init_ssl(void)
 {
+#if (OPENSSL_VERSION_NUMBER < 0x10100000L) || defined(LIBRESSL_VERSION_NUMBER)
 	SSL_library_init();
 	ERR_load_crypto_strings();
 	SSL_load_error_strings();
@@ -167,6 +194,7 @@ init_ssl(void)
 	if (SSLeay() != OPENSSL_VERSION_NUMBER) {
 		TT_DECLARE("WARN", ("Version mismatch for openssl: compiled with %lx but running with %lx", (unsigned long)OPENSSL_VERSION_NUMBER, (unsigned long) SSLeay()));
 	}
+#endif
 }
 
 /* ====================
@@ -199,19 +227,20 @@ enum regress_openssl_type
 	REGRESS_OPENSSL_FREED = 256,
 	REGRESS_OPENSSL_TIMEOUT = 512,
 	REGRESS_OPENSSL_SLEEP = 1024,
+
+	REGRESS_OPENSSL_CLIENT_WRITE = 2048,
 };
 
 static void
 bufferevent_openssl_check_fd(struct bufferevent *bev, int filter)
 {
+	tt_int_op(bufferevent_getfd(bev), !=, -1);
+	tt_int_op(bufferevent_setfd(bev, -1), ==, 0);
 	if (filter) {
-		tt_int_op(bufferevent_getfd(bev), ==, -1);
-		tt_int_op(bufferevent_setfd(bev, -1), ==, -1);
-	} else {
 		tt_int_op(bufferevent_getfd(bev), !=, -1);
-		tt_int_op(bufferevent_setfd(bev, -1), ==, 0);
+	} else {
+		tt_int_op(bufferevent_getfd(bev), ==, -1);
 	}
-	tt_int_op(bufferevent_getfd(bev), ==, -1);
 
 end:
 	;
@@ -294,6 +323,9 @@ eventcb(struct bufferevent *bev, short what, void *ctx)
 			if (--pending_connect_events == 0)
 				event_base_loopexit(exit_base, NULL);
 		}
+
+		if ((type & REGRESS_OPENSSL_CLIENT_WRITE) && (type & REGRESS_OPENSSL_CLIENT))
+			evbuffer_add_printf(bufferevent_get_output(bev), "1\n");
 	} else if (what & BEV_EVENT_EOF) {
 		TT_BLATHER(("Got a good EOF"));
 		++got_close;
@@ -437,7 +469,8 @@ regress_bufferevent_openssl(void *arg)
 		bufferevent_enable(bev1, EV_READ|EV_WRITE);
 		bufferevent_enable(bev2, EV_READ|EV_WRITE);
 
-		evbuffer_add_printf(bufferevent_get_output(bev1), "1\n");
+		if (!(type & REGRESS_OPENSSL_CLIENT_WRITE))
+			evbuffer_add_printf(bufferevent_get_output(bev1), "1\n");
 
 		event_base_dispatch(data->base);
 
@@ -460,7 +493,8 @@ regress_bufferevent_openssl(void *arg)
 
 		bufferevent_set_timeouts(bev1, &t, &t);
 
-		evbuffer_add_printf(bufferevent_get_output(bev1), "1\n");
+		if (!(type & REGRESS_OPENSSL_CLIENT_WRITE))
+			evbuffer_add_printf(bufferevent_get_output(bev1), "1\n");
 
 		event_base_dispatch(data->base);
 
@@ -527,10 +561,8 @@ struct rwcount
 static int
 bio_rwcount_new(BIO *b)
 {
-	b->init = 0;
-	b->num = -1;
-	b->ptr = NULL;
-	b->flags = 0;
+	BIO_set_init(b, 0);
+	BIO_set_data(b, NULL);
 	return 1;
 }
 static int
@@ -538,20 +570,19 @@ bio_rwcount_free(BIO *b)
 {
 	if (!b)
 		return 0;
-	if (b->shutdown) {
-		b->init = 0;
-		b->flags = 0;
-		b->ptr = NULL;
+	if (BIO_get_shutdown(b)) {
+		BIO_set_init(b, 0);
+		BIO_set_data(b, NULL);
 	}
 	return 1;
 }
 static int
 bio_rwcount_read(BIO *b, char *out, int outlen)
 {
-	struct rwcount *rw = b->ptr;
-	ssize_t ret = read(rw->fd, out, outlen);
+	struct rwcount *rw = BIO_get_data(b);
+	ev_ssize_t ret = recv(rw->fd, out, outlen, 0);
 	++rw->read;
-	if (ret == -1 && errno == EAGAIN) {
+	if (ret == -1 && EVUTIL_ERR_RW_RETRIABLE(EVUTIL_SOCKET_ERROR())) {
 		BIO_set_retry_read(b);
 	}
 	return ret;
@@ -560,10 +591,10 @@ static int
 bio_rwcount_write(BIO *b, const char *in, int inlen)
 {
 
-	struct rwcount *rw = b->ptr;
-	ssize_t ret = write(rw->fd, in, inlen);
+	struct rwcount *rw = BIO_get_data(b);
+	ev_ssize_t ret = send(rw->fd, in, inlen, 0);
 	++rw->write;
-	if (ret == -1 && errno == EAGAIN) {
+	if (ret == -1 && EVUTIL_ERR_RW_RETRIABLE(EVUTIL_SOCKET_ERROR())) {
 		BIO_set_retry_write(b);
 	}
 	return ret;
@@ -574,10 +605,10 @@ bio_rwcount_ctrl(BIO *b, int cmd, long num, void *ptr)
 	long ret = 0;
 	switch (cmd) {
 	case BIO_CTRL_GET_CLOSE:
-		ret = b->shutdown;
+		ret = BIO_get_shutdown(b);
 		break;
 	case BIO_CTRL_SET_CLOSE:
-		b->shutdown = (int)num;
+		BIO_set_shutdown(b, (int)num);
 		break;
 	case BIO_CTRL_PENDING:
 		ret = 0;
@@ -598,21 +629,23 @@ bio_rwcount_puts(BIO *b, const char *s)
 	return bio_rwcount_write(b, s, strlen(s));
 }
 #define BIO_TYPE_LIBEVENT_RWCOUNT 0xff1
-static BIO_METHOD methods_rwcount = {
-	BIO_TYPE_LIBEVENT_RWCOUNT, "rwcount",
-	bio_rwcount_write,
-	bio_rwcount_read,
-	bio_rwcount_puts,
-	NULL /* bio_rwcount_gets */,
-	bio_rwcount_ctrl,
-	bio_rwcount_new,
-	bio_rwcount_free,
-	NULL /* callback_ctrl */,
-};
+static BIO_METHOD *methods_rwcount;
+
 static BIO_METHOD *
 BIO_s_rwcount(void)
 {
-	return &methods_rwcount;
+	if (methods_rwcount == NULL) {
+		methods_rwcount = BIO_meth_new(BIO_TYPE_LIBEVENT_RWCOUNT, "rwcount");
+		if (methods_rwcount == NULL)
+			return NULL;
+		BIO_meth_set_write(methods_rwcount, bio_rwcount_write);
+		BIO_meth_set_read(methods_rwcount, bio_rwcount_read);
+		BIO_meth_set_puts(methods_rwcount, bio_rwcount_puts);
+		BIO_meth_set_ctrl(methods_rwcount, bio_rwcount_ctrl);
+		BIO_meth_set_create(methods_rwcount, bio_rwcount_new);
+		BIO_meth_set_destroy(methods_rwcount, bio_rwcount_free);
+	}
+	return methods_rwcount;
 }
 static BIO *
 BIO_new_rwcount(int close_flag)
@@ -620,9 +653,9 @@ BIO_new_rwcount(int close_flag)
 	BIO *result;
 	if (!(result = BIO_new(BIO_s_rwcount())))
 		return NULL;
-	result->init = 1;
-	result->ptr = NULL;
-	result->shutdown = !!close_flag;
+	BIO_set_init(result, 1);
+	BIO_set_data(result,  NULL);
+	BIO_set_shutdown(result, !!close_flag);
 	return result;
 }
 
@@ -686,7 +719,7 @@ regress_bufferevent_openssl_connect(void *arg)
 		rw.fd = bufferevent_getfd(bev);
 		bio = BIO_new_rwcount(0);
 		tt_assert(bio);
-		bio->ptr = &rw;
+		BIO_set_data(bio, &rw);
 		SSL_set_bio(ssl, bio, bio);
 	}
 	evbuffer_add_printf(bufferevent_get_output(bev), "1\n");
@@ -704,8 +737,14 @@ struct testcase_t ssl_testcases[] = {
 #define T(a) ((void *)(a))
 	{ "bufferevent_socketpair", regress_bufferevent_openssl,
 	  TT_ISOLATED, &basic_setup, T(REGRESS_OPENSSL_SOCKETPAIR) },
+	{ "bufferevent_socketpair_write_after_connect", regress_bufferevent_openssl,
+	  TT_ISOLATED, &basic_setup,
+	  T(REGRESS_OPENSSL_SOCKETPAIR|REGRESS_OPENSSL_CLIENT_WRITE) },
 	{ "bufferevent_filter", regress_bufferevent_openssl,
 	  TT_ISOLATED, &basic_setup, T(REGRESS_OPENSSL_FILTER) },
+	{ "bufferevent_filter_write_after_connect", regress_bufferevent_openssl,
+	  TT_ISOLATED, &basic_setup,
+	  T(REGRESS_OPENSSL_FILTER|REGRESS_OPENSSL_CLIENT_WRITE) },
 	{ "bufferevent_renegotiate_socketpair", regress_bufferevent_openssl,
 	  TT_ISOLATED, &basic_setup,
 	  T(REGRESS_OPENSSL_SOCKETPAIR | REGRESS_OPENSSL_RENEGOTIATE) },

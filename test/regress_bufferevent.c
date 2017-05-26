@@ -487,11 +487,11 @@ bufferevent_input_filter(struct evbuffer *src, struct evbuffer *dst,
 
 	buffer = evbuffer_pullup(src, evbuffer_get_length(src));
 	for (i = 0; i < evbuffer_get_length(src); i += 2) {
+		if (buffer[i] == '-')
+			continue;
+
 		assert(buffer[i] == 'x');
 		evbuffer_add(dst, buffer + i + 1, 1);
-
-		if (i + 2 > evbuffer_get_length(src))
-			break;
 	}
 
 	evbuffer_drain(src, i);
@@ -506,19 +506,35 @@ bufferevent_output_filter(struct evbuffer *src, struct evbuffer *dst,
 {
 	const unsigned char *buffer;
 	unsigned i;
+	struct bufferevent **bevp = ctx;
 
-	buffer = evbuffer_pullup(src, evbuffer_get_length(src));
-	for (i = 0; i < evbuffer_get_length(src); ++i) {
-		evbuffer_add(dst, "x", 1);
-		evbuffer_add(dst, buffer + i, 1);
+	++test_ok;
+
+	if (test_ok == 1) {
+		buffer = evbuffer_pullup(src, evbuffer_get_length(src));
+		for (i = 0; i < evbuffer_get_length(src); ++i) {
+			evbuffer_add(dst, "x", 1);
+			evbuffer_add(dst, buffer + i, 1);
+		}
+		evbuffer_drain(src, evbuffer_get_length(src));
+	} else {
+		return BEV_ERROR;
 	}
 
-	evbuffer_drain(src, evbuffer_get_length(src));
+	if (bevp && test_ok == 1) {
+		int prev = ++test_ok;
+		bufferevent_write(*bevp, "-", 1);
+		/* check that during this bufferevent_write()
+		 * bufferevent_output_filter() will not be called again */
+		assert(test_ok == prev);
+		--test_ok;
+	}
+
 	return (BEV_OK);
 }
 
 static void
-test_bufferevent_filters_impl(int use_pair)
+test_bufferevent_filters_impl(int use_pair, int disable)
 {
 	struct bufferevent *bev1 = NULL, *bev2 = NULL;
 	struct bufferevent *bev1_base = NULL, *bev2_base = NULL;
@@ -543,7 +559,8 @@ test_bufferevent_filters_impl(int use_pair)
 		buffer[i] = i;
 
 	bev1 = bufferevent_filter_new(bev1, NULL, bufferevent_output_filter,
-				      BEV_OPT_CLOSE_ON_FREE, NULL, NULL);
+				      BEV_OPT_CLOSE_ON_FREE, NULL,
+					  disable ? &bev1 : NULL);
 
 	bev2 = bufferevent_filter_new(bev2, bufferevent_input_filter,
 				      NULL, BEV_OPT_CLOSE_ON_FREE, NULL, NULL);
@@ -562,7 +579,7 @@ test_bufferevent_filters_impl(int use_pair)
 
 	event_dispatch();
 
-	if (test_ok != 2)
+	if (test_ok != 3 + !!disable)
 		test_ok = 0;
 
 end:
@@ -573,17 +590,14 @@ end:
 
 }
 
-static void
-test_bufferevent_filters(void)
-{
-	test_bufferevent_filters_impl(0);
-}
-
-static void
-test_bufferevent_pair_filters(void)
-{
-	test_bufferevent_filters_impl(1);
-}
+static void test_bufferevent_filters(void)
+{ test_bufferevent_filters_impl(0, 0); }
+static void test_bufferevent_pair_filters(void)
+{ test_bufferevent_filters_impl(1, 0); }
+static void test_bufferevent_filters_disable(void)
+{ test_bufferevent_filters_impl(0, 1); }
+static void test_bufferevent_pair_filters_disable(void)
+{ test_bufferevent_filters_impl(1, 1); }
 
 
 static void
@@ -1176,6 +1190,142 @@ end:
 		bufferevent_free(bev);
 }
 
+static void
+pair_flush_eventcb(struct bufferevent *bev, short what, void *ctx)
+{
+	int *callback_what = ctx;
+	*callback_what = what;
+}
+
+static void
+test_bufferevent_pair_flush(void *arg)
+{
+	struct basic_test_data *data = arg;
+	struct bufferevent *pair[2];
+	struct bufferevent *bev1 = NULL;
+	struct bufferevent *bev2 = NULL;
+	int callback_what = 0;
+
+	tt_assert(0 == bufferevent_pair_new(data->base, 0, pair));
+	bev1 = pair[0];
+	bev2 = pair[1];
+	tt_assert(0 == bufferevent_enable(bev1, EV_WRITE));
+	tt_assert(0 == bufferevent_enable(bev2, EV_READ));
+
+	bufferevent_setcb(bev2, NULL, NULL, pair_flush_eventcb, &callback_what);
+
+	bufferevent_flush(bev1, EV_WRITE, BEV_FINISHED);
+
+	event_base_loop(data->base, EVLOOP_ONCE);
+
+	tt_assert(callback_what == (BEV_EVENT_READING | BEV_EVENT_EOF));
+
+end:
+	if (bev1)
+		bufferevent_free(bev1);
+	if (bev2)
+		bufferevent_free(bev2);
+}
+
+struct bufferevent_filter_data_stuck {
+	size_t header_size;
+	size_t total_read;
+};
+
+static void
+bufferevent_filter_data_stuck_readcb(struct bufferevent *bev, void *arg)
+{
+	struct bufferevent_filter_data_stuck *filter_data = arg;
+	struct evbuffer *input = bufferevent_get_input(bev);
+	size_t read_size = evbuffer_get_length(input);
+	evbuffer_drain(input, read_size);
+	filter_data->total_read += read_size;
+}
+
+/**
+ * This filter prepends header once before forwarding data.
+ */
+static enum bufferevent_filter_result
+bufferevent_filter_data_stuck_inputcb(
+    struct evbuffer *src, struct evbuffer *dst, ev_ssize_t dst_limit,
+    enum bufferevent_flush_mode mode, void *ctx)
+{
+	struct bufferevent_filter_data_stuck *filter_data = ctx;
+	static int header_inserted = 0;
+	size_t payload_size;
+	size_t header_size = 0;
+
+	if (!header_inserted) {
+		char *header = calloc(filter_data->header_size, 1);
+		evbuffer_add(dst, header, filter_data->header_size);
+		free(header);
+		header_size = filter_data->header_size;
+		header_inserted = 1;
+	}
+
+	payload_size = evbuffer_get_length(src);
+	if (payload_size > dst_limit - header_size) {
+		payload_size = dst_limit - header_size;
+	}
+
+	tt_int_op(payload_size, ==, evbuffer_remove_buffer(src, dst, payload_size));
+
+end:
+	return BEV_OK;
+}
+
+static void
+test_bufferevent_filter_data_stuck(void *arg)
+{
+	const size_t read_high_wm = 4096;
+	struct bufferevent_filter_data_stuck filter_data;
+	struct basic_test_data *data = arg;
+	struct bufferevent *pair[2];
+	struct bufferevent *filter = NULL;
+
+	int options = BEV_OPT_CLOSE_ON_FREE | BEV_OPT_DEFER_CALLBACKS;
+
+	char payload[4096];
+	int payload_size = sizeof(payload);
+
+	memset(&filter_data, 0, sizeof(filter_data));
+	filter_data.header_size = 20;
+
+	tt_assert(bufferevent_pair_new(data->base, options, pair) == 0);
+
+	bufferevent_setwatermark(pair[0], EV_READ, 0, read_high_wm);
+	bufferevent_setwatermark(pair[1], EV_READ, 0, read_high_wm);
+
+	tt_assert(
+		filter =
+		 bufferevent_filter_new(pair[1],
+		 bufferevent_filter_data_stuck_inputcb,
+		 NULL,
+		 options,
+		 NULL,
+		 &filter_data));
+
+	bufferevent_setcb(filter,
+		bufferevent_filter_data_stuck_readcb,
+		NULL,
+		NULL,
+		&filter_data);
+
+	tt_assert(bufferevent_enable(filter, EV_READ|EV_WRITE) == 0);
+
+	bufferevent_setwatermark(filter, EV_READ, 0, read_high_wm);
+
+	tt_assert(bufferevent_write(pair[0], payload, sizeof(payload)) == 0);
+
+	event_base_dispatch(data->base);
+
+	tt_int_op(filter_data.total_read, ==, payload_size + filter_data.header_size);
+end:
+	if (pair[0])
+		bufferevent_free(pair[0]);
+	if (filter)
+		bufferevent_free(filter);
+}
 
 struct testcase_t bufferevent_testcases[] = {
 
@@ -1196,6 +1346,8 @@ struct testcase_t bufferevent_testcases[] = {
 	LEGACY(bufferevent_pair_watermarks, TT_ISOLATED),
 	LEGACY(bufferevent_filters, TT_ISOLATED),
 	LEGACY(bufferevent_pair_filters, TT_ISOLATED),
+	LEGACY(bufferevent_filters_disable, TT_ISOLATED),
+	LEGACY(bufferevent_pair_filters_disable, TT_ISOLATED),
 	{ "bufferevent_connect", test_bufferevent_connect, TT_FORK|TT_NEED_BASE,
 	  &basic_setup, (void*)"" },
 	{ "bufferevent_connect_defer", test_bufferevent_connect,
@@ -1244,6 +1396,12 @@ struct testcase_t bufferevent_testcases[] = {
 	{ "bufferevent_socket_filter_inactive",
 	  test_bufferevent_socket_filter_inactive,
 	  TT_FORK|TT_NEED_BASE, &basic_setup, NULL },
+	{ "bufferevent_pair_flush",
+	  test_bufferevent_pair_flush,
+	  TT_FORK|TT_NEED_BASE, &basic_setup, NULL },
+	{ "bufferevent_filter_data_stuck",
+	  test_bufferevent_filter_data_stuck,
+	  TT_FORK|TT_NEED_BASE, &basic_setup, NULL },
 
 	END_OF_TESTCASES,
 };
@@ -1256,6 +1414,7 @@ struct testcase_t bufferevent_iocp_testcases[] = {
 	LEGACY(bufferevent_flush_finished, TT_ISOLATED),
 	LEGACY(bufferevent_watermarks, TT_ISOLATED|TT_ENABLE_IOCP),
 	LEGACY(bufferevent_filters, TT_ISOLATED|TT_ENABLE_IOCP),
+	LEGACY(bufferevent_filters_disable, TT_ISOLATED|TT_ENABLE_IOCP),
 	{ "bufferevent_connect", test_bufferevent_connect,
 	  TT_FORK|TT_NEED_BASE|TT_ENABLE_IOCP, &basic_setup, (void*)"" },
 	{ "bufferevent_connect_defer", test_bufferevent_connect,
@@ -1276,7 +1435,7 @@ struct testcase_t bufferevent_iocp_testcases[] = {
 	  test_bufferevent_connect_fail_eventcb,
 	  TT_FORK|TT_NEED_BASE|TT_ENABLE_IOCP, &basic_setup,
 	  (void*)BEV_OPT_DEFER_CALLBACKS },
-	{ "bufferevent_connect_fail",
+	{ "bufferevent_connect_fail_eventcb",
 	  test_bufferevent_connect_fail_eventcb,
 	  TT_FORK|TT_NEED_BASE|TT_ENABLE_IOCP, &basic_setup, NULL },
 
